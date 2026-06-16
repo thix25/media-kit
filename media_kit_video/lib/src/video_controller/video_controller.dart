@@ -156,6 +156,17 @@ class VideoController {
     );
   }
 
+  /// Sets a sticky aspect-preserving upscale render target so libmpv renders
+  /// the video output at (up to) the given size, making GPU user shaders such
+  /// as FSRCNNX take visible effect. Passing nulls disables upscaling.
+  Future<void> setUpscale({int? maxWidth, int? maxHeight}) async {
+    final instance = await platform.future;
+    return instance.setUpscale(
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+    );
+  }
+
   /// A [Future] that completes when the first video frame has been rendered.
   Future<void> get waitUntilFirstFrameRendered async {
     final instance = await platform.future;

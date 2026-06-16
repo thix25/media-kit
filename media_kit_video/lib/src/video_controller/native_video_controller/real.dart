@@ -5,6 +5,7 @@
 /// Use of this source code is governed by MIT license that can be found in the LICENSE file.
 import 'dart:io';
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:collection';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
@@ -46,6 +47,14 @@ class NativeVideoController extends PlatformVideoController {
 
   /// Height of the video (from [VideoParams]).
   int? videoParamsHeight;
+
+  /// Sticky aspect-preserving upscale target width. When set, libmpv is asked
+  /// to render the video output at (up to) this size so GPU user shaders such
+  /// as FSRCNNX take visible effect instead of running at the source size.
+  int? upscaleMaxWidth;
+
+  /// Sticky aspect-preserving upscale target height. See [upscaleMaxWidth].
+  int? upscaleMaxHeight;
 
   /// [Lock] used to synchronize [onLoadHooks], [onUnloadHooks] & [subscription].
   final lock = Lock();
@@ -98,15 +107,64 @@ class NativeVideoController extends PlatformVideoController {
         videoParamsWidth = width;
         videoParamsHeight = height;
 
+        final out = _outputSizeFor(width, height);
+
         await _channel.invokeMethod(
           'VideoOutputManager.SetSize',
           {
             'handle': handle.toString(),
-            'width': width.toString(),
-            'height': height.toString(),
+            'width': out.width.toString(),
+            'height': out.height.toString(),
           },
         );
       }),
+    );
+  }
+
+  /// Computes the video output size for the given source [srcW] x [srcH],
+  /// honoring the sticky [upscaleMaxWidth] / [upscaleMaxHeight] target.
+  ///
+  /// The result preserves the source aspect ratio and only ever enlarges the
+  /// output (never shrinks below the source). When no target is set, or the
+  /// computed scale would be a no-op (<= ~1.01x), the source size is returned
+  /// unchanged so behavior matches upstream media_kit.
+  _OutputSize _outputSizeFor(int srcW, int srcH) {
+    final tw = upscaleMaxWidth;
+    final th = upscaleMaxHeight;
+    if (tw == null || th == null || srcW <= 0 || srcH <= 0) {
+      return _OutputSize(srcW, srcH);
+    }
+    final scale = math.min(tw / srcW, th / srcH);
+    if (scale <= 1.01) {
+      return _OutputSize(srcW, srcH);
+    }
+    final outW = (srcW * scale).round();
+    final outH = (srcH * scale).round();
+    return _OutputSize(outW, outH);
+  }
+
+  /// Sets a sticky aspect-preserving upscale render target. Passing both
+  /// [maxWidth] and [maxHeight] enables upscaling; passing nulls disables it.
+  /// The change is re-applied immediately using the last known video params.
+  @override
+  Future<void> setUpscale({int? maxWidth, int? maxHeight}) async {
+    upscaleMaxWidth = maxWidth;
+    upscaleMaxHeight = maxHeight;
+
+    final w = videoParamsWidth;
+    final h = videoParamsHeight;
+    if (w == null || h == null || w <= 0 || h <= 0) {
+      return;
+    }
+    final handle = await player.handle;
+    final out = _outputSizeFor(w, h);
+    await _channel.invokeMethod(
+      'VideoOutputManager.SetSize',
+      {
+        'handle': handle.toString(),
+        'width': out.width.toString(),
+        'height': out.height.toString(),
+      },
     );
   }
 
@@ -296,4 +354,13 @@ class NativeVideoController extends PlatformVideoController {
             }
           },
         );
+}
+
+/// Simple value holder for a computed video output size. Declared as a plain
+/// class (not a Dart record) because this fork targets Dart SDK >= 2.17.0,
+/// which predates record syntax.
+class _OutputSize {
+  final int width;
+  final int height;
+  const _OutputSize(this.width, this.height);
 }
