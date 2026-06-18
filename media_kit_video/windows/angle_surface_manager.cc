@@ -42,9 +42,16 @@ void ANGLESurfaceManager::SetSize(int32_t width, int32_t height) {
   if (width == width_ && height == height_) {
     return;
   }
+  // Serialize the texture/surface re-creation against |Draw| & |Read|, which
+  // run on Flutter's render thread and hold |mutex_| while using the current
+  // textures. Without this guard, |Create| can free a texture mid-read and
+  // crash the process (STATUS_STACK_BUFFER_OVERRUN / 0xC0000409) inside
+  // flutter_windows.dll's texture path.
+  ::WaitForSingleObject(mutex_, INFINITE);
   width_ = width;
   height_ = height;
   Create();
+  ::ReleaseMutex(mutex_);
 }
 
 void ANGLESurfaceManager::Draw(std::function<void()> callback) {

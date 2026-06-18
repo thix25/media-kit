@@ -56,6 +56,34 @@ class NativeVideoController extends PlatformVideoController {
   /// Sticky aspect-preserving upscale target height. See [upscaleMaxWidth].
   int? upscaleMaxHeight;
 
+  /// The last video-output size actually pushed to the native side via
+  /// `VideoOutputManager.SetSize`. Used to skip redundant native resizes: each
+  /// SetSize triggers a native texture destroy+recreate, and issuing one while
+  /// a frame is being rendered can crash the D3D/ANGLE backend. Re-applying the
+  /// same size on every open()/channel-switch is therefore both wasteful and
+  /// dangerous, so we no-op when the size is unchanged.
+  int? _lastOutputWidth;
+  int? _lastOutputHeight;
+
+  /// Pushes [out] to the native side as the video-output size, but only when it
+  /// differs from the last value sent (see [_lastOutputWidth]). Must be called
+  /// while holding [lock].
+  Future<void> _applyOutputSize(int handle, _OutputSize out) async {
+    if (_lastOutputWidth == out.width && _lastOutputHeight == out.height) {
+      return;
+    }
+    _lastOutputWidth = out.width;
+    _lastOutputHeight = out.height;
+    await _channel.invokeMethod(
+      'VideoOutputManager.SetSize',
+      {
+        'handle': handle.toString(),
+        'width': out.width.toString(),
+        'height': out.height.toString(),
+      },
+    );
+  }
+
   /// [Lock] used to synchronize [onLoadHooks], [onUnloadHooks] & [subscription].
   final lock = Lock();
 
@@ -108,15 +136,7 @@ class NativeVideoController extends PlatformVideoController {
         videoParamsHeight = height;
 
         final out = _outputSizeFor(width, height);
-
-        await _channel.invokeMethod(
-          'VideoOutputManager.SetSize',
-          {
-            'handle': handle.toString(),
-            'width': out.width.toString(),
-            'height': out.height.toString(),
-          },
-        );
+        await _applyOutputSize(handle, out);
       }),
     );
   }
@@ -148,24 +168,24 @@ class NativeVideoController extends PlatformVideoController {
   /// The change is re-applied immediately using the last known video params.
   @override
   Future<void> setUpscale({int? maxWidth, int? maxHeight}) async {
-    upscaleMaxWidth = maxWidth;
-    upscaleMaxHeight = maxHeight;
+    // Serialize with the [videoParams] subscription (which also issues
+    // VideoOutputManager.SetSize): two concurrent SetSize -> two native Resize
+    // that each destroy & recreate the D3D/ANGLE texture, which crashes the
+    // backend (notably at startup on a real 4K display). The shared [lock]
+    // guarantees the resizes happen one at a time.
+    await lock.synchronized(() async {
+      upscaleMaxWidth = maxWidth;
+      upscaleMaxHeight = maxHeight;
 
-    final w = videoParamsWidth;
-    final h = videoParamsHeight;
-    if (w == null || h == null || w <= 0 || h <= 0) {
-      return;
-    }
-    final handle = await player.handle;
-    final out = _outputSizeFor(w, h);
-    await _channel.invokeMethod(
-      'VideoOutputManager.SetSize',
-      {
-        'handle': handle.toString(),
-        'width': out.width.toString(),
-        'height': out.height.toString(),
-      },
-    );
+      final w = videoParamsWidth;
+      final h = videoParamsHeight;
+      if (w == null || h == null || w <= 0 || h <= 0) {
+        return;
+      }
+      final handle = await player.handle;
+      final out = _outputSizeFor(w, h);
+      await _applyOutputSize(handle, out);
+    });
   }
 
   /// {@macro native_video_controller}

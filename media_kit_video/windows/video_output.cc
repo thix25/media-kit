@@ -312,12 +312,23 @@ void VideoOutput::Resize(int64_t required_width, int64_t required_height) {
         std::make_unique<flutter::TextureVariant>(flutter::GpuSurfaceTexture(
             kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle, [&](auto, auto) {
               std::lock_guard<std::mutex> lock(textures_mutex_);
-              if (texture_id_) {
-                surface_manager_->Read();
-                return textures_.at(texture_id_).get();
-              } else {
-                return (FlutterDesktopGpuSurfaceDescriptor*)nullptr;
+              // This callback is invoked by the Flutter engine across a C ABI
+              // boundary, so it MUST NOT throw: an escaping C++ exception
+              // becomes std::terminate -> abort -> 0xC0000409. During a
+              // |Resize|, |texture_id_| is assigned by RegisterTexture before
+              // the matching entry is emplaced into |textures_|; if the engine
+              // calls back in that window, |textures_.at(texture_id_)| would
+              // throw std::out_of_range. Use a non-throwing lookup (and guard
+              // the surface manager against teardown) and return nullptr until
+              // the entry is present.
+              if (texture_id_ && surface_manager_ != nullptr) {
+                auto it = textures_.find(texture_id_);
+                if (it != textures_.end()) {
+                  surface_manager_->Read();
+                  return it->second.get();
+                }
               }
+              return (FlutterDesktopGpuSurfaceDescriptor*)nullptr;
             }));
     // Register new texture.
     texture_id_ =
@@ -342,11 +353,16 @@ void VideoOutput::Resize(int64_t required_width, int64_t required_height) {
     auto texture_variant = std::make_unique<flutter::TextureVariant>(
         flutter::PixelBufferTexture([&](auto, auto) {
           std::lock_guard<std::mutex> lock(textures_mutex_);
+          // Must not throw across the engine C ABI (see the H/W callback above):
+          // use a non-throwing lookup so a transient missing |texture_id_|
+          // during |Resize| returns nullptr instead of std::out_of_range.
           if (texture_id_) {
-            return pixel_buffer_textures_.at(texture_id_).get();
-          } else {
-            return (FlutterDesktopPixelBuffer*)nullptr;
+            auto it = pixel_buffer_textures_.find(texture_id_);
+            if (it != pixel_buffer_textures_.end()) {
+              return it->second.get();
+            }
           }
+          return (FlutterDesktopPixelBuffer*)nullptr;
         }));
     // Register new texture.
     texture_id_ =
