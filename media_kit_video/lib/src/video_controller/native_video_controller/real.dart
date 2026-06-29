@@ -155,7 +155,11 @@ class NativeVideoController extends PlatformVideoController {
       return _OutputSize(srcW, srcH);
     }
     final scale = math.min(tw / srcW, th / srcH);
-    if (scale <= 1.01) {
+    // Skip only true no-ops (~1x). Scales above enlarge (upscale); scales
+    // below shrink the render target — a 480p cap on a 1080p source really
+    // renders at 480p, cutting GPU pixel work, then Flutter scales the small
+    // texture up to the window.
+    if (scale >= 0.99 && scale <= 1.01) {
       return _OutputSize(srcW, srcH);
     }
     final outW = (srcW * scale).round();
