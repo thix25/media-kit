@@ -82,7 +82,14 @@ void ANGLESurfaceManager::MakeCurrent(bool value) {
 }
 
 void ANGLESurfaceManager::SwapBuffers() {
-  glFinish();
+  // glFinish() blocks the CPU until the GPU has fully drained the pipeline
+  // EVERY frame. On a strong dGPU that is invisible, but on a weak integrated
+  // GPU compositing a 4K window (e.g. an Intel N95 with ~16 EUs) it pins the
+  // 3D engine at 100% and shreds the frame rate even for a 720p/1080p source.
+  // glFlush() submits the work without stalling; the downstream
+  // CopyResource already serialises the texture for Flutter, so a full hard
+  // sync is not needed.
+  glFlush();
 }
 
 void ANGLESurfaceManager::Create() {
